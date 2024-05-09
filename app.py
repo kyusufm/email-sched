@@ -4,6 +4,9 @@ from flask_sqlalchemy import SQLAlchemy
 from celery import Celery
 from flask_wtf.csrf import CSRFProtect
 from utils.helpers import reformat_datetime
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import and_
+
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -25,12 +28,18 @@ celery = Celery(app.name, broker=app.config['CELERY_BROKER_URL'])
 celery.conf.update(app.config)
 
 # Define the database model
+# Define the association table
+event_recipients = db.Table('event_recipients',
+    db.Column('event_id', db.Integer, db.ForeignKey('events.id')),
+    db.Column('recipient_id', db.Integer, db.ForeignKey('recipients.id')),
+    db.Column('sent', db.Boolean, default=False)
+)
 class Event(db.Model):
     __tablename__ = 'events'
     id = db.Column(db.Integer, primary_key=True)
     event_name = db.Column(db.String(255), nullable=False)
     event_date = db.Column(db.Date, nullable=False)
-    recipients = db.relationship('Recipient', secondary='event_recipients', backref='events')
+    recipients = db.relationship('Recipient', secondary=event_recipients, backref='events')
 class Recipient(db.Model):
     __tablename__ = 'recipients'
     id = db.Column(db.Integer, primary_key=True)
@@ -38,7 +47,8 @@ class Recipient(db.Model):
 class Email(db.Model):
     __tablename__ = 'email'  # Explicitly specify the table name
     id = db.Column(db.Integer, primary_key=True)
-    event_id = db.Column(db.Integer)
+    event_id = db.Column(db.Integer, db.ForeignKey('events.id'))
+    event = relationship("Event", foreign_keys=[event_id], backref="emails")
     email_subject = db.Column(db.String(255))
     email_content = db.Column(db.Text)
     timestamp = db.Column(db.DateTime)
@@ -49,9 +59,23 @@ db.create_all()
 @celery.task
 def send_email(email_id):
     email = Email.query.get(email_id)
-    # logic to send the email
-    # print(f"Sending email to {email.email_subject} with content: {email.email_content}")
-    print("Sending email to " + email.email_subject + " with content: " + email.email_content)
+    event = email.event
+    
+    # Get recipients for the event from event_recipients table
+    recipients = Recipient.query.join(event_recipients).filter(event_recipients.c.event_id == event.id).all()
+
+    for recipient in recipients:
+        # Logic to send email to each recipient
+        print("Sending email to {} with subject: {} and content: {}".format(recipient.email, email.email_subject, email.email_content))
+    
+        # Update sent status for the recipient
+        event_recipients.update().where(
+            and_(
+                event_recipients.c.event_id == event.id,
+                event_recipients.c.recipient_id == recipient.id
+            )
+        ).values(sent=True)
+        db.session.commit()
 
 # Welcome endpoint
 @app.route('/')
@@ -99,5 +123,4 @@ def get_emails():
 # Create database tables if not exists and run the app
 if __name__ == '__main__':
     db.create_all()
-    app.run(debug=True)
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=5000, debug=True)
