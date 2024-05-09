@@ -2,11 +2,17 @@ from flask import Flask, request, jsonify
 from datetime import datetime
 from flask_sqlalchemy import SQLAlchemy
 from celery import Celery
-from flask_wtf.csrf import csrf_exempt
-
+from flask_wtf.csrf import CSRFProtect
+from utils.helpers import reformat_datetime
 
 # Initialize Flask app
 app = Flask(__name__)
+
+# Configure CSRF protection
+app.config['WTF_CSRF_ENABLED'] = False  # Disable CSRF protection globally
+
+# Initialize CSRF protection
+csrf = CSRFProtect(app)
 
 # Configure SQLAlchemy database
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///emails.db'  # Using SQLite for simplicity
@@ -19,6 +25,16 @@ celery = Celery(app.name, broker=app.config['CELERY_BROKER_URL'])
 celery.conf.update(app.config)
 
 # Define the database model
+class Event(db.Model):
+    __tablename__ = 'events'
+    id = db.Column(db.Integer, primary_key=True)
+    event_name = db.Column(db.String(255), nullable=False)
+    event_date = db.Column(db.Date, nullable=False)
+    recipients = db.relationship('Recipient', secondary='event_recipients', backref='events')
+class Recipient(db.Model):
+    __tablename__ = 'recipients'
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), unique=True, nullable=False)
 class Email(db.Model):
     __tablename__ = 'email'  # Explicitly specify the table name
     id = db.Column(db.Integer, primary_key=True)
@@ -26,6 +42,8 @@ class Email(db.Model):
     email_subject = db.Column(db.String(255))
     email_content = db.Column(db.Text)
     timestamp = db.Column(db.DateTime)
+
+db.create_all()
 
 # Celery task to send emails
 @celery.task
@@ -42,13 +60,14 @@ def index():
 
 # Endpoint to save emails
 @app.route('/save_emails', methods=['POST'])
-@csrf_exempt
 def save_emails():
     data = request.json
     event_id = data.get('event_id')
     email_subject = data.get('email_subject')
     email_content = data.get('email_content')
-    timestamp = datetime.strptime(data.get('timestamp'), '%d %b %Y %H:%M')
+
+    # Reformat the datetime string using the reformat_datetime helper function
+    timestamp = reformat_datetime(data.get('timestamp'))
 
     if not all([event_id, email_subject, email_content, timestamp]):
         return jsonify({'error': 'Missing required parameters'}), 400
